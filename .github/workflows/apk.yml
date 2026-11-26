@@ -46,20 +46,26 @@ jobs:
           tag_name: build-${{ github.run_number }}
           name: Ritmo ${{ env.VERSAO }}
           files: Ritmo.apk
-      - name: Entrar no Firebase
-        id: auth
-        if: env.TEM_CHAVE == 'true'
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.FIREBASE_SA }}
-          token_format: access_token
-          access_token_scopes: https://www.googleapis.com/auth/firebase.messaging
       - name: Avisar os celulares (aviso instantâneo)
         if: env.TEM_CHAVE == 'true'
+        env:
+          SA_JSON: ${{ secrets.FIREBASE_SA }}
+          APK_URL: https://github.com/${{ github.repository }}/releases/download/build-${{ github.run_number }}/Ritmo.apk
         run: |
-          PROJETO='${{ steps.auth.outputs.project_id }}'
-          URL="https://github.com/${{ github.repository }}/releases/download/build-${{ github.run_number }}/Ritmo.apk"
-          curl -s -X POST "https://fcm.googleapis.com/v1/projects/$PROJETO/messages:send" \
-            -H "Authorization: Bearer ${{ steps.auth.outputs.access_token }}" \
-            -H "Content-Type: application/json" \
-            -d "{\"message\":{\"topic\":\"updates\",\"android\":{\"priority\":\"high\"},\"data\":{\"type\":\"update\",\"version\":\"$VERSAO\",\"url\":\"$URL\"}}}"
+          python3 -m pip install -q --break-system-packages google-auth requests || python3 -m pip install -q google-auth requests
+          python3 - <<'PY'
+          import json, os, requests
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import Request
+          info = json.loads(os.environ["SA_JSON"])
+          cred = service_account.Credentials.from_service_account_info(
+              info, scopes=["https://www.googleapis.com/auth/firebase.messaging"])
+          cred.refresh(Request())
+          msg = {"message": {"topic": "updates", "android": {"priority": "high"},
+                 "data": {"type": "update", "version": os.environ.get("VERSAO", ""), "url": os.environ["APK_URL"]}}}
+          r = requests.post(
+              f"https://fcm.googleapis.com/v1/projects/{info['project_id']}/messages:send",
+              headers={"Authorization": f"Bearer {cred.token}"}, json=msg)
+          print(r.status_code, r.text)
+          r.raise_for_status()
+          PY
