@@ -2,12 +2,16 @@ name: Gerar APK
 on:
   push:
     branches: [main]
+    paths: ['**.zip']
   workflow_dispatch:
 permissions:
   contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      TEM_FIREBASE: ${{ secrets.GOOGLE_SERVICES_JSON != '' }}
+      TEM_CHAVE: ${{ secrets.FIREBASE_SA != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,16 +23,43 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.11.1
-      - name: Compilar APK
+      - name: Preparar o projeto
         run: |
           ZIP=$(git log -1 --name-only --diff-filter=AM --pretty=format: -- '*.zip' | grep . | head -1)
           echo "Usando o arquivo: $ZIP"
           unzip -q -o "$ZIP" -d projeto
+          VERSAO=$(grep -oP 'versionName = "\K[^"]+' projeto/Ritmo/app/build.gradle.kts || echo "")
+          echo "VERSAO=$VERSAO" >> $GITHUB_ENV
+          echo "Versão: $VERSAO"
+      - name: Ligar o Firebase
+        if: env.TEM_FIREBASE == 'true'
+        env:
+          GS_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: printf '%s' "$GS_JSON" > projeto/Ritmo/app/google-services.json
+      - name: Compilar APK
+        run: |
           cd projeto/Ritmo
           gradle assembleDebug --no-daemon
           cp app/build/outputs/apk/debug/app-debug.apk $GITHUB_WORKSPACE/Ritmo.apk
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: Ritmo ${{ github.run_number }}
+          name: Ritmo ${{ env.VERSAO }}
           files: Ritmo.apk
+      - name: Entrar no Firebase
+        id: auth
+        if: env.TEM_CHAVE == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SA }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/firebase.messaging
+      - name: Avisar os celulares (aviso instantâneo)
+        if: env.TEM_CHAVE == 'true'
+        run: |
+          PROJETO='${{ steps.auth.outputs.project_id }}'
+          URL="https://github.com/${{ github.repository }}/releases/download/build-${{ github.run_number }}/Ritmo.apk"
+          curl -s -X POST "https://fcm.googleapis.com/v1/projects/$PROJETO/messages:send" \
+            -H "Authorization: Bearer ${{ steps.auth.outputs.access_token }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"message\":{\"topic\":\"updates\",\"android\":{\"priority\":\"high\"},\"data\":{\"type\":\"update\",\"version\":\"$VERSAO\",\"url\":\"$URL\"}}}"
